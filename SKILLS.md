@@ -19,6 +19,7 @@
 - Keep rendering helpers pure and side-effect light.
 - Use compact containers/columns for dense metadata display.
 - Ensure controls are disabled only when necessary and provide guidance messages.
+- Prefer local-file picker flows for large media to avoid browser transport limits.
 
 ## Git Practices
 - Make small, clean commits by concern (`feat`, `refactor`, `docs`, `chore`).

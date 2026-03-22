@@ -4,8 +4,9 @@ Local subtitle generator for English vocabulary practice. The app runs fully on-
 
 ## Features
 
-- Upload `.mp4`, `.mkv`, `.mp3`, `.m4a`, or `.wav`
+- Local file picker for `.mp4`, `.mkv`, `.mp3`, `.m4a`, or `.wav`
 - Automatic audio extraction from video via ffmpeg
+- Direct transcription for audio files (no extraction step)
 - Multi-track audio selection for video files
 - English-only transcription with selectable Whisper model size (Tiny through Large)
 - Advanced decoding controls: beam size, temperature
@@ -49,19 +50,10 @@ srt_gen/
 	config.py              # Shared dataclasses and constants
 ```
 
-## Upload Limit
+Processing behavior:
 
-Streamlit enforces an upload cap before the app can extract audio from video.
-The default is `200MB`, which is often too small for `.mp4` and `.mkv` files.
-
-This project sets the limit in `.streamlit/config.toml`:
-
-```toml
-[server]
-maxUploadSize = 2048
-```
-
-`maxUploadSize` is in megabytes, so `2048` allows files up to 2GB.
+- Video input (`.mp4`, `.mkv`): ffmpeg extracts mono 16kHz audio, then Whisper transcribes.
+- Audio input (`.mp3`, `.m4a`, `.wav`): Whisper transcribes directly (extraction skipped).
 
 ## Model Sizes
 

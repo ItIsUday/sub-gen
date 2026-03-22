@@ -14,12 +14,13 @@ This repository contains a local subtitle generation app built with Streamlit, f
 ## Guardrails
 - Keep `main.py` as a thin entrypoint only.
 - Preserve local-first design: no server-side transcription.
+- Prefer native local-file selection over browser uploads.
 - Keep transcription history capped at 5 items unless requirements change.
 - Prefer small, testable functions and avoid large monolithic handlers.
 - Run `uv run ruff check .` and `uv run ruff format .` before committing.
 
 ## PR Checklist
 - App still launches with `uv run streamlit run main.py`.
-- Upload/download flow persists across reruns.
+- Local-file select/download flow persists across reruns.
 - History selector correctly loads latest 5 records.
-- Large video upload still works with `.streamlit/config.toml` limit.
+- Large local video selection still transcribes without browser transport errors.
