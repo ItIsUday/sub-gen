@@ -1,3 +1,2 @@
-[server]
-# Streamlit's default upload limit is 200 MB. Increase it for larger video files.
-maxUploadSize = 2048
+# Browser upload is intentionally disabled in this app.
+# Local file picker is used for media selection instead.

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import platform
 import shutil
-import uuid
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -14,21 +15,48 @@ from .config import AudioTrack
 logger = logging.getLogger("srt_gen")
 
 
+def pick_local_media_file(allowed_extensions: tuple[str, ...]) -> Path | None:
+    """Open a native file picker and return a selected media path.
+
+    Uses `osascript` on macOS to avoid Tkinter main-thread crashes in Streamlit.
+    """
+    if platform.system() != "Darwin":
+        logger.warning("Native file picker currently supported on macOS only")
+        return None
+
+    extension_filters = ", ".join(f'"{ext}"' for ext in allowed_extensions)
+    script = (
+        'set pickedFile to choose file with prompt "Select media file" '
+        f"of type {{{extension_filters}}}\n"
+        "POSIX path of pickedFile"
+    )
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        logger.exception("Failed to launch macOS file picker via osascript")
+        return None
+
+    if result.returncode != 0:
+        # User-cancelled picker is expected and should not be treated as an error.
+        logger.info("No local file selected from picker")
+        return None
+
+    selected = result.stdout.strip()
+    return Path(selected) if selected else None
+
+
 def check_system_dependencies() -> list[str]:
     missing = []
     for binary in ("ffmpeg", "ffprobe"):
         if shutil.which(binary) is None:
             missing.append(binary)
     return missing
-
-
-def save_uploaded_media(uploaded_file: Any, workspace: Path) -> Path:
-    suffix = Path(uploaded_file.name).suffix.lower()
-    file_name = f"source_{uuid.uuid4().hex}{suffix}"
-    destination = workspace / file_name
-    destination.write_bytes(uploaded_file.getbuffer())
-    logger.info("Saved upload '%s' to '%s'", uploaded_file.name, destination)
-    return destination
 
 
 def get_media_metadata(media_path: Path) -> dict[str, Any]:
