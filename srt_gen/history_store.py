@@ -113,6 +113,35 @@ def load_history_from_db() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def load_timing_samples(
+    model_name: str,
+    *,
+    is_video_input: bool | None = None,
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    query = (
+        "SELECT model_name, source_duration_seconds, is_video_input, "
+        "total_time_seconds, stage1_time_seconds, stage2_time_seconds, "
+        "stage3_time_seconds, created_at "
+        "FROM transcription_history "
+        "WHERE model_name = ? "
+        "AND source_duration_seconds > 0 "
+        "AND stage3_time_seconds > 0 "
+    )
+    params: list[Any] = [model_name]
+
+    if is_video_input is not None:
+        query += "AND is_video_input = ? "
+        params.append(int(is_video_input))
+
+    query += "ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    with _get_db_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
 def persist_record_to_db(record: dict[str, Any]) -> None:
     with _get_db_connection() as conn:
         conn.execute(

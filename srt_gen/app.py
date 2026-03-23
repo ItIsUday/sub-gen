@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 import uuid
 from pathlib import Path
@@ -15,6 +16,7 @@ from .config import (
     VIDEO_EXTENSIONS,
 )
 from .history_store import init_db
+from .history_store import load_timing_samples
 from .media import (
     check_system_dependencies,
     extract_audio_to_wav,
@@ -58,27 +60,51 @@ def build_stage_estimates(
     is_video_input: bool,
     model_name: str,
     model_label: str,
-    history: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     extraction_seconds = max(4.0, duration_seconds * 0.12) if is_video_input else 1.0
     stage_estimates: list[dict[str, Any]] = []
-    model_history = [
+    model_history = load_timing_samples(model_name, limit=25)
+    input_history = [
         item
-        for item in history
-        if str(item.get("model_name", "")) == model_name
-        and float(item.get("source_duration_seconds", 0.0)) > 0
-        and float(item.get("stage3_time_seconds", 0.0)) > 0
+        for item in model_history
+        if bool(item.get("is_video_input")) == is_video_input
     ]
 
-    if model_history:
-        transcription_factors = [
-            float(item["stage3_time_seconds"]) / float(item["source_duration_seconds"])
-            for item in model_history
-        ]
-        learned_realtime_factor = sum(transcription_factors) / len(
-            transcription_factors
+    def duration_weight(sample_duration_seconds: float) -> float:
+        if duration_seconds <= 0 or sample_duration_seconds <= 0:
+            return 1.0
+        log_distance = abs(math.log(sample_duration_seconds / duration_seconds))
+        return 1.0 / (1.0 + (log_distance * 4.0))
+
+    def weighted_average(values: list[tuple[float, float]]) -> float | None:
+        total_weight = sum(weight for _, weight in values)
+        if total_weight <= 0:
+            return None
+        return sum(value * weight for value, weight in values) / total_weight
+
+    transcription_factors = [
+        (
+            float(item["stage3_time_seconds"]) / float(item["source_duration_seconds"]),
+            duration_weight(float(item["source_duration_seconds"])),
         )
-    else:
+        for item in input_history
+        if float(item.get("source_duration_seconds", 0.0)) > 0
+        and float(item.get("stage3_time_seconds", 0.0)) > 0
+    ]
+    learned_realtime_factor = weighted_average(transcription_factors)
+    if learned_realtime_factor is None:
+        fallback_factors = [
+            (
+                float(item["stage3_time_seconds"])
+                / float(item["source_duration_seconds"]),
+                duration_weight(float(item["source_duration_seconds"])),
+            )
+            for item in model_history
+            if float(item.get("source_duration_seconds", 0.0)) > 0
+            and float(item.get("stage3_time_seconds", 0.0)) > 0
+        ]
+        learned_realtime_factor = weighted_average(fallback_factors)
+    if learned_realtime_factor is None:
         learned_realtime_factor = next(
             option.transcription_realtime_factor
             for option in MODEL_OPTIONS
@@ -86,21 +112,21 @@ def build_stage_estimates(
         )
 
     if is_video_input:
-        video_history = [
-            item
-            for item in model_history
-            if bool(item.get("is_video_input"))
+        extraction_factors = [
+            (
+                float(item["stage1_time_seconds"])
+                / float(item["source_duration_seconds"]),
+                duration_weight(float(item["source_duration_seconds"])),
+            )
+            for item in input_history
+            if float(item.get("source_duration_seconds", 0.0)) > 0
             and float(item.get("stage1_time_seconds", 0.0)) > 0
         ]
-        if video_history:
-            extraction_factors = [
-                float(item["stage1_time_seconds"])
-                / float(item["source_duration_seconds"])
-                for item in video_history
-            ]
+        learned_extraction_factor = weighted_average(extraction_factors)
+        if learned_extraction_factor is not None:
             extraction_seconds = max(
                 1.0,
-                duration_seconds * (sum(extraction_factors) / len(extraction_factors)),
+                duration_seconds * learned_extraction_factor,
             )
         stage_estimates.append(
             {
@@ -114,17 +140,31 @@ def build_stage_estimates(
         option for option in MODEL_OPTIONS if option.model_name == model_name
     )
     load_history = [
-        float(item["stage2_time_seconds"])
-        for item in model_history
+        (
+            float(item["stage2_time_seconds"]),
+            duration_weight(float(item["source_duration_seconds"])),
+        )
+        for item in input_history
         if float(item.get("stage2_time_seconds", 0.0)) > 0
     ]
+    learned_load_seconds = weighted_average(load_history)
+    if learned_load_seconds is None:
+        fallback_load_history = [
+            (
+                float(item["stage2_time_seconds"]),
+                duration_weight(float(item["source_duration_seconds"])),
+            )
+            for item in model_history
+            if float(item.get("stage2_time_seconds", 0.0)) > 0
+        ]
+        learned_load_seconds = weighted_average(fallback_load_history)
     stage_estimates.append(
         {
             "key": "load_model",
             "label": f"Load {model_label} model",
             "expected_seconds": (
-                sum(load_history) / len(load_history)
-                if load_history
+                learned_load_seconds
+                if learned_load_seconds is not None
                 else model_config.estimated_load_seconds
             ),
         }
@@ -303,7 +343,6 @@ def run_app() -> None:
             is_video_input=is_video_input,
             model_name=selected_model.model_name,
             model_label=selected_model.label,
-            history=st.session_state.transcription_history,
         )
         progress_container = st.container()
         estimate_placeholder = progress_container.empty()
