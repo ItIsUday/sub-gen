@@ -60,7 +60,7 @@ def build_stage_estimates(
     is_video_input: bool,
     model_name: str,
     model_label: str,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | None:
     extraction_seconds = max(4.0, duration_seconds * 0.12) if is_video_input else 1.0
     stage_estimates: list[dict[str, Any]] = []
     model_history = load_timing_samples(model_name, limit=25)
@@ -81,6 +81,9 @@ def build_stage_estimates(
         if total_weight <= 0:
             return None
         return sum(value * weight for value, weight in values) / total_weight
+
+    if not model_history:
+        return None
 
     transcription_factors = [
         (
@@ -105,11 +108,7 @@ def build_stage_estimates(
         ]
         learned_realtime_factor = weighted_average(fallback_factors)
     if learned_realtime_factor is None:
-        learned_realtime_factor = next(
-            option.transcription_realtime_factor
-            for option in MODEL_OPTIONS
-            if option.model_name == model_name
-        )
+        return None
 
     if is_video_input:
         extraction_factors = [
@@ -136,9 +135,6 @@ def build_stage_estimates(
             }
         )
 
-    model_config = next(
-        option for option in MODEL_OPTIONS if option.model_name == model_name
-    )
     load_history = [
         (
             float(item["stage2_time_seconds"]),
@@ -158,15 +154,13 @@ def build_stage_estimates(
             if float(item.get("stage2_time_seconds", 0.0)) > 0
         ]
         learned_load_seconds = weighted_average(fallback_load_history)
+    if learned_load_seconds is None:
+        return None
     stage_estimates.append(
         {
             "key": "load_model",
             "label": f"Load {model_label} model",
-            "expected_seconds": (
-                learned_load_seconds
-                if learned_load_seconds is not None
-                else model_config.estimated_load_seconds
-            ),
+            "expected_seconds": learned_load_seconds,
         }
     )
     stage_estimates.append(
@@ -353,11 +347,16 @@ def run_app() -> None:
 
         try:
             if is_video_input:
-                render_transcription_estimate(
-                    stage_estimates, "extract", target=estimate_placeholder
-                )
+                if stage_estimates is not None:
+                    render_transcription_estimate(
+                        stage_estimates, "extract", target=estimate_placeholder
+                    )
                 status_text.info("Stage 1/3: Extracting audio with ffmpeg...")
-                progress_bar.progress(get_stage_progress(stage_estimates, "extract"))
+                progress_bar.progress(
+                    get_stage_progress(stage_estimates, "extract")
+                    if stage_estimates is not None
+                    else 15
+                )
                 stage1_start = time.time()
                 extract_audio_to_wav(
                     source_path, extracted_audio_path, selected_track_index
@@ -379,17 +378,27 @@ def run_app() -> None:
                 transcribe_status = "Stage 2/2: Transcribing audio..."
                 load_stage_key = "load_model"
 
-            render_transcription_estimate(
-                stage_estimates, load_stage_key, target=estimate_placeholder
-            )
+            if stage_estimates is not None:
+                render_transcription_estimate(
+                    stage_estimates, load_stage_key, target=estimate_placeholder
+                )
             status_text.info(model_status)
-            progress_bar.progress(get_stage_progress(stage_estimates, load_stage_key))
+            progress_bar.progress(
+                get_stage_progress(stage_estimates, load_stage_key)
+                if stage_estimates is not None
+                else (50 if is_video_input else 60)
+            )
             model, stage2_time = load_model_with_timing(selected_model.model_name)
 
-            render_transcription_estimate(
-                stage_estimates, "transcribe", target=estimate_placeholder
+            if stage_estimates is not None:
+                render_transcription_estimate(
+                    stage_estimates, "transcribe", target=estimate_placeholder
+                )
+            progress_bar.progress(
+                get_stage_progress(stage_estimates, "transcribe")
+                if stage_estimates is not None
+                else (66 if is_video_input else 80)
             )
-            progress_bar.progress(get_stage_progress(stage_estimates, "transcribe"))
             status_text.info(transcribe_status)
             result, stage3_time = transcribe_with_timing(
                 model,
