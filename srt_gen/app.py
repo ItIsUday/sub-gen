@@ -33,6 +33,7 @@ from .ui import (
     apply_app_styles,
     render_history_header,
     render_media_metadata,
+    render_transcription_estimate,
     render_transcription_output,
     render_transcription_stats,
 )
@@ -49,6 +50,113 @@ logger = logging.getLogger("srt_gen")
 def ensure_input_state() -> None:
     if "selected_local_file_path" not in st.session_state:
         st.session_state.selected_local_file_path = None
+
+
+def build_stage_estimates(
+    *,
+    duration_seconds: float,
+    is_video_input: bool,
+    model_name: str,
+    model_label: str,
+    history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    extraction_seconds = max(4.0, duration_seconds * 0.12) if is_video_input else 1.0
+    stage_estimates: list[dict[str, Any]] = []
+    model_history = [
+        item
+        for item in history
+        if str(item.get("model_name", "")) == model_name
+        and float(item.get("source_duration_seconds", 0.0)) > 0
+        and float(item.get("stage3_time_seconds", 0.0)) > 0
+    ]
+
+    if model_history:
+        transcription_factors = [
+            float(item["stage3_time_seconds"]) / float(item["source_duration_seconds"])
+            for item in model_history
+        ]
+        learned_realtime_factor = sum(transcription_factors) / len(
+            transcription_factors
+        )
+    else:
+        learned_realtime_factor = next(
+            option.transcription_realtime_factor
+            for option in MODEL_OPTIONS
+            if option.model_name == model_name
+        )
+
+    if is_video_input:
+        video_history = [
+            item
+            for item in model_history
+            if bool(item.get("is_video_input"))
+            and float(item.get("stage1_time_seconds", 0.0)) > 0
+        ]
+        if video_history:
+            extraction_factors = [
+                float(item["stage1_time_seconds"])
+                / float(item["source_duration_seconds"])
+                for item in video_history
+            ]
+            extraction_seconds = max(
+                1.0,
+                duration_seconds * (sum(extraction_factors) / len(extraction_factors)),
+            )
+        stage_estimates.append(
+            {
+                "key": "extract",
+                "label": "Extract audio",
+                "expected_seconds": extraction_seconds,
+            }
+        )
+
+    model_config = next(
+        option for option in MODEL_OPTIONS if option.model_name == model_name
+    )
+    load_history = [
+        float(item["stage2_time_seconds"])
+        for item in model_history
+        if float(item.get("stage2_time_seconds", 0.0)) > 0
+    ]
+    stage_estimates.append(
+        {
+            "key": "load_model",
+            "label": f"Load {model_label} model",
+            "expected_seconds": (
+                sum(load_history) / len(load_history)
+                if load_history
+                else model_config.estimated_load_seconds
+            ),
+        }
+    )
+    stage_estimates.append(
+        {
+            "key": "transcribe",
+            "label": "Transcribe speech",
+            "expected_seconds": max(3.0, duration_seconds * learned_realtime_factor),
+        }
+    )
+    return stage_estimates
+
+
+def get_estimated_total_seconds(stage_estimates: list[dict[str, Any]]) -> float:
+    return sum(float(stage["expected_seconds"]) for stage in stage_estimates)
+
+
+def get_stage_progress(
+    stage_estimates: list[dict[str, Any]], current_stage_key: str
+) -> int:
+    total_seconds = get_estimated_total_seconds(stage_estimates)
+    if total_seconds <= 0:
+        return 0
+
+    completed_seconds = 0.0
+    for stage in stage_estimates:
+        if str(stage["key"]) == current_stage_key:
+            break
+        completed_seconds += float(stage["expected_seconds"])
+
+    return min(95, max(5, int((completed_seconds / total_seconds) * 100)))
 
 
 def run_app() -> None:
@@ -104,6 +212,7 @@ def run_app() -> None:
     selected_track_index: int | None = None
     source_path: Path | None = None
     source_display_name: str | None = None
+    metadata: dict[str, Any] | None = None
 
     st.caption("Source: Local file picker")
     picker_col, clear_col = st.columns([3, 1], gap="small")
@@ -186,7 +295,18 @@ def run_app() -> None:
         file_ext = source_path.suffix.lower()
         is_video_input = file_ext in VIDEO_EXTENSIONS
         extracted_audio_path = workspace / f"audio_{uuid.uuid4().hex}.wav"
+        duration_seconds = (
+            float(metadata.get("duration_seconds", 0.0)) if metadata else 0.0
+        )
+        stage_estimates = build_stage_estimates(
+            duration_seconds=duration_seconds,
+            is_video_input=is_video_input,
+            model_name=selected_model.model_name,
+            model_label=selected_model.label,
+            history=st.session_state.transcription_history,
+        )
         progress_container = st.container()
+        estimate_placeholder = progress_container.empty()
         progress_bar = progress_container.progress(0)
         status_text = progress_container.empty()
 
@@ -194,42 +314,43 @@ def run_app() -> None:
 
         try:
             if is_video_input:
+                render_transcription_estimate(
+                    stage_estimates, "extract", target=estimate_placeholder
+                )
                 status_text.info("Stage 1/3: Extracting audio with ffmpeg...")
-                progress_bar.progress(15)
+                progress_bar.progress(get_stage_progress(stage_estimates, "extract"))
                 stage1_start = time.time()
                 extract_audio_to_wav(
                     source_path, extracted_audio_path, selected_track_index
                 )
                 stage1_time = time.time() - stage1_start
                 transcription_input = extracted_audio_path
-                progress_bar.progress(33)
 
                 model_status = (
                     f"Stage 2/3: Loading Whisper {selected_model.label} model..."
                 )
-                model_progress = 50
                 transcribe_status = "Stage 3/3: Transcribing audio..."
-                transcribe_progress = 66
+                load_stage_key = "load_model"
             else:
                 stage1_time = 0.0
                 transcription_input = source_path
-                status_text.info(
-                    "Stage 1/2: Audio file detected, skipping extraction..."
-                )
-                progress_bar.progress(35)
-
                 model_status = (
                     f"Stage 1/2: Loading Whisper {selected_model.label} model..."
                 )
-                model_progress = 60
                 transcribe_status = "Stage 2/2: Transcribing audio..."
-                transcribe_progress = 80
+                load_stage_key = "load_model"
 
+            render_transcription_estimate(
+                stage_estimates, load_stage_key, target=estimate_placeholder
+            )
             status_text.info(model_status)
-            progress_bar.progress(model_progress)
+            progress_bar.progress(get_stage_progress(stage_estimates, load_stage_key))
             model, stage2_time = load_model_with_timing(selected_model.model_name)
-            progress_bar.progress(transcribe_progress)
 
+            render_transcription_estimate(
+                stage_estimates, "transcribe", target=estimate_placeholder
+            )
+            progress_bar.progress(get_stage_progress(stage_estimates, "transcribe"))
             status_text.info(transcribe_status)
             result, stage3_time = transcribe_with_timing(
                 model,
@@ -240,6 +361,7 @@ def run_app() -> None:
             progress_bar.progress(100)
 
             total_time = time.time() - start_time
+            estimate_placeholder.empty()
             progress_container.empty()
             st.success("Transcription completed successfully!")
 
@@ -257,6 +379,7 @@ def run_app() -> None:
 
         except ffmpeg.Error as err:
             logger.exception("ffmpeg extraction failed")
+            estimate_placeholder.empty()
             progress_container.empty()
             details = (
                 err.stderr.decode("utf-8", errors="replace") if err.stderr else str(err)
@@ -268,6 +391,7 @@ def run_app() -> None:
             st.stop()
         except (RuntimeError, MemoryError) as err:
             logger.exception("Runtime or memory failure during transcription")
+            estimate_placeholder.empty()
             progress_container.empty()
             st.error(
                 "Transcription failed, likely due to memory pressure. "
@@ -277,6 +401,7 @@ def run_app() -> None:
             st.stop()
         except Exception as err:
             logger.exception("Unexpected transcription exception")
+            estimate_placeholder.empty()
             progress_container.empty()
             st.error(
                 f"Transcription failed: {err}\n\n"
@@ -292,6 +417,13 @@ def run_app() -> None:
         record = build_transcription_record(
             file_name=source_display_name,
             model_label=selected_model.label,
+            model_name=selected_model.model_name,
+            source_duration_seconds=duration_seconds,
+            is_video_input=is_video_input,
+            total_time_seconds=total_time,
+            stage1_time_seconds=stage1_time,
+            stage2_time_seconds=stage2_time,
+            stage3_time_seconds=stage3_time,
             segments=segments,
         )
         save_transcription_record(record)

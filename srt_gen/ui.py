@@ -34,6 +34,91 @@ def apply_app_styles() -> None:
             padding-bottom: var(--control-spacing);
         }
 
+        .transcription-estimate {
+            border: 1px solid rgba(15, 23, 42, 0.12);
+            border-radius: 0.9rem;
+            background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.92));
+            padding: 1rem;
+            margin-bottom: 0.8rem;
+        }
+
+        .transcription-estimate__header {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            align-items: baseline;
+            margin-bottom: 0.8rem;
+        }
+
+        .transcription-estimate__title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: #0f172a;
+        }
+
+        .transcription-estimate__total {
+            font-size: 0.9rem;
+            color: #334155;
+        }
+
+        .transcription-estimate__grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0.65rem;
+        }
+
+        .transcription-estimate__step {
+            border-radius: 0.8rem;
+            padding: 0.8rem 0.9rem;
+            background: rgba(255, 255, 255, 0.78);
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            transition: all 120ms ease;
+        }
+
+        .transcription-estimate__step.is-current {
+            background: #0f172a;
+            border-color: #0f172a;
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.14);
+        }
+
+        .transcription-estimate__step.is-complete {
+            background: rgba(226, 232, 240, 0.72);
+            border-color: rgba(100, 116, 139, 0.18);
+        }
+
+        .transcription-estimate__eyebrow {
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #64748b;
+            margin-bottom: 0.3rem;
+        }
+
+        .transcription-estimate__step.is-current .transcription-estimate__eyebrow {
+            color: rgba(226, 232, 240, 0.9);
+        }
+
+        .transcription-estimate__label {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #0f172a;
+            margin-bottom: 0.15rem;
+        }
+
+        .transcription-estimate__step.is-current .transcription-estimate__label {
+            color: #f8fafc;
+        }
+
+        .transcription-estimate__duration {
+            font-size: 0.9rem;
+            color: #475569;
+        }
+
+        .transcription-estimate__step.is-current .transcription-estimate__duration {
+            color: rgba(226, 232, 240, 0.92);
+        }
+
         @media (max-width: 768px) {
             .stApp [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"] {
                 padding-left: 1rem;
@@ -87,6 +172,68 @@ def render_transcription_stats(
     st.caption(
         f"Breakdown: Extraction ({stage1_time:.1f}s) -> "
         f"Model ({stage2_time:.1f}s) -> Transcription ({stage3_time:.1f}s)"
+    )
+
+
+def format_eta(seconds: float) -> str:
+    rounded_seconds = max(1, int(round(seconds)))
+    minutes, secs = divmod(rounded_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"~{hours}h {minutes}m"
+    if minutes:
+        return f"~{minutes}m {secs}s"
+    return f"~{secs}s"
+
+
+def render_transcription_estimate(
+    stage_estimates: list[dict[str, Any]],
+    current_stage_key: str,
+    target: Any | None = None,
+) -> None:
+    total_seconds = sum(float(stage["expected_seconds"]) for stage in stage_estimates)
+    cards: list[str] = []
+    active_found = False
+
+    for stage in stage_estimates:
+        stage_key = str(stage["key"])
+        state_class = ""
+        step_status = "Queued"
+        if stage_key == current_stage_key:
+            state_class = "is-current"
+            step_status = "Current"
+            active_found = True
+        elif not active_found:
+            state_class = "is-complete"
+            step_status = "Done"
+
+        cards.append(
+            "<div class='transcription-estimate__step {state_class}'>"
+            "<div class='transcription-estimate__eyebrow'>{step_status}</div>"
+            "<div class='transcription-estimate__label'>{label}</div>"
+            "<div class='transcription-estimate__duration'>{duration}</div>"
+            "</div>".format(
+                state_class=state_class,
+                step_status=html.escape(step_status),
+                label=html.escape(str(stage["label"])),
+                duration=html.escape(format_eta(float(stage["expected_seconds"]))),
+            )
+        )
+
+    render_target = target if target is not None else st
+    render_target.markdown(
+        (
+            "<div class='transcription-estimate'>"
+            "<div class='transcription-estimate__header'>"
+            "<div class='transcription-estimate__title'>Expected step timings</div>"
+            f"<div class='transcription-estimate__total'>Estimated total {html.escape(format_eta(total_seconds))}</div>"
+            "</div>"
+            "<div class='transcription-estimate__grid'>"
+            f"{''.join(cards)}"
+            "</div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
     )
 
 
