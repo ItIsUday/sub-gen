@@ -12,6 +12,26 @@ def _get_db_connection() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    column_name: str,
+    column_type: str,
+    default_sql: str,
+) -> None:
+    existing_columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name in existing_columns:
+        return
+    conn.execute(
+        f"ALTER TABLE {table_name} "
+        f"ADD COLUMN {column_name} {column_type} NOT NULL DEFAULT {default_sql}"
+    )
+
+
 def init_db() -> None:
     with _get_db_connection() as conn:
         conn.execute(
@@ -28,16 +48,97 @@ def init_db() -> None:
             )
             """
         )
+        _ensure_column(
+            conn,
+            table_name="transcription_history",
+            column_name="model_name",
+            column_type="TEXT",
+            default_sql="''",
+        )
+        _ensure_column(
+            conn,
+            table_name="transcription_history",
+            column_name="source_duration_seconds",
+            column_type="REAL",
+            default_sql="0",
+        )
+        _ensure_column(
+            conn,
+            table_name="transcription_history",
+            column_name="is_video_input",
+            column_type="INTEGER",
+            default_sql="0",
+        )
+        _ensure_column(
+            conn,
+            table_name="transcription_history",
+            column_name="total_time_seconds",
+            column_type="REAL",
+            default_sql="0",
+        )
+        _ensure_column(
+            conn,
+            table_name="transcription_history",
+            column_name="stage1_time_seconds",
+            column_type="REAL",
+            default_sql="0",
+        )
+        _ensure_column(
+            conn,
+            table_name="transcription_history",
+            column_name="stage2_time_seconds",
+            column_type="REAL",
+            default_sql="0",
+        )
+        _ensure_column(
+            conn,
+            table_name="transcription_history",
+            column_name="stage3_time_seconds",
+            column_type="REAL",
+            default_sql="0",
+        )
 
 
 def load_history_from_db() -> list[dict[str, Any]]:
     with _get_db_connection() as conn:
         rows = conn.execute(
-            "SELECT id, display_name, file_stem, transcript, txt, srt, md, created_at "
+            "SELECT id, display_name, file_stem, model_name, source_duration_seconds, "
+            "is_video_input, total_time_seconds, stage1_time_seconds, "
+            "stage2_time_seconds, stage3_time_seconds, transcript, txt, srt, md, "
+            "created_at "
             "FROM transcription_history "
             "ORDER BY created_at DESC LIMIT ?",
             (MAX_HISTORY_ITEMS,),
         ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def load_timing_samples(
+    model_name: str,
+    *,
+    is_video_input: bool | None = None,
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    query = (
+        "SELECT model_name, source_duration_seconds, is_video_input, "
+        "total_time_seconds, stage1_time_seconds, stage2_time_seconds, "
+        "stage3_time_seconds, created_at "
+        "FROM transcription_history "
+        "WHERE model_name = ? "
+        "AND source_duration_seconds > 0 "
+        "AND stage3_time_seconds > 0 "
+    )
+    params: list[Any] = [model_name]
+
+    if is_video_input is not None:
+        query += "AND is_video_input = ? "
+        params.append(int(is_video_input))
+
+    query += "ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    with _get_db_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -46,8 +147,40 @@ def persist_record_to_db(record: dict[str, Any]) -> None:
         conn.execute(
             """
             INSERT OR REPLACE INTO transcription_history
-                (id, display_name, file_stem, transcript, txt, srt, md, created_at)
-            VALUES (:id, :display_name, :file_stem, :transcript, :txt, :srt, :md, :created_at)
+                (
+                    id,
+                    display_name,
+                    file_stem,
+                    model_name,
+                    source_duration_seconds,
+                    is_video_input,
+                    total_time_seconds,
+                    stage1_time_seconds,
+                    stage2_time_seconds,
+                    stage3_time_seconds,
+                    transcript,
+                    txt,
+                    srt,
+                    md,
+                    created_at
+                )
+            VALUES (
+                :id,
+                :display_name,
+                :file_stem,
+                :model_name,
+                :source_duration_seconds,
+                :is_video_input,
+                :total_time_seconds,
+                :stage1_time_seconds,
+                :stage2_time_seconds,
+                :stage3_time_seconds,
+                :transcript,
+                :txt,
+                :srt,
+                :md,
+                :created_at
+            )
             """,
             record,
         )

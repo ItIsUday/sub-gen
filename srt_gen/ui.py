@@ -34,6 +34,40 @@ def apply_app_styles() -> None:
             padding-bottom: var(--control-spacing);
         }
 
+        .transcription-estimate {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.55rem;
+            margin: 0.35rem 0 0.7rem;
+            padding: 0.45rem 0.7rem;
+            border: 1px solid rgba(15, 23, 42, 0.12);
+            border-radius: 999px;
+            background: rgba(248, 250, 252, 0.92);
+        }
+        .transcription-estimate__dot {
+            width: 0.55rem;
+            height: 0.55rem;
+            border-radius: 999px;
+            background: #0f172a;
+            box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.08);
+            flex-shrink: 0;
+        }
+        .transcription-estimate__label {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #0f172a;
+            line-height: 1.2;
+        }
+        .transcription-estimate__separator {
+            color: #94a3b8;
+            font-size: 0.82rem;
+            line-height: 1;
+        }
+        .transcription-estimate__duration {
+            font-size: 0.85rem;
+            color: #475569;
+            white-space: nowrap;
+        }
         @media (max-width: 768px) {
             .stApp [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"] {
                 padding-left: 1rem;
@@ -87,6 +121,42 @@ def render_transcription_stats(
     st.caption(
         f"Breakdown: Extraction ({stage1_time:.1f}s) -> "
         f"Model ({stage2_time:.1f}s) -> Transcription ({stage3_time:.1f}s)"
+    )
+
+
+def format_eta(seconds: float) -> str:
+    rounded_seconds = max(1, int(round(seconds)))
+    minutes, secs = divmod(rounded_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"~{hours}h {minutes}m"
+    if minutes:
+        return f"~{minutes}m {secs}s"
+    return f"~{secs}s"
+
+
+def render_transcription_estimate(
+    stage_estimates: list[dict[str, Any]],
+    current_stage_key: str,
+    target: Any | None = None,
+) -> None:
+    current_stage = next(
+        (stage for stage in stage_estimates if str(stage["key"]) == current_stage_key),
+        None,
+    )
+    if current_stage is None:
+        return
+    render_target = target if target is not None else st
+    render_target.markdown(
+        (
+            "<div class='transcription-estimate'>"
+            "<div class='transcription-estimate__dot'></div>"
+            f"<div class='transcription-estimate__label'>{html.escape(str(current_stage['label']))}</div>"
+            "<div class='transcription-estimate__separator'>&middot;</div>"
+            f"<div class='transcription-estimate__duration'>Expected {html.escape(format_eta(float(current_stage['expected_seconds'])))}</div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
     )
 
 
